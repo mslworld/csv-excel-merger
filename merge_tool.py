@@ -4,14 +4,14 @@ import os
 import tempfile
 
 st.set_page_config(page_title="CSV/Excel Merger Tool", layout="centered")
-st.title("📁 Merge CSV and Excel Files into One CSV")
+st.title("📁 Merge CSV, Excel, and TXT Files into One CSV")
 
 # Pagination settings
 FILES_PER_PAGE = 20
 
 uploaded_files = st.file_uploader(
-    "Upload multiple CSV or Excel files (any size, any mix)",
-    type=["csv", "xls", "xlsx"],
+    "Upload multiple CSV, Excel, or TXT files (any size, any mix)",
+    type=["csv", "xls", "xlsx", "txt"],
     accept_multiple_files=True,
     key="file_uploader"
 )
@@ -36,6 +36,8 @@ if uploaded_files:
                         df = pd.read_csv(uploaded_file)
                     elif filename.endswith(('.xls', '.xlsx')):
                         df = pd.read_excel(uploaded_file, engine='openpyxl')
+                    elif filename.endswith('.txt'):
+                        df = pd.read_csv(uploaded_file, delimiter='\t')  # tab-delimited assumed
                     else:
                         st.warning(f"Unsupported file type: {filename}")
                         continue
