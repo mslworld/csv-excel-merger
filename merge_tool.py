@@ -2,12 +2,14 @@ import streamlit as st
 import pandas as pd
 import os
 import tempfile
+import io
 
 st.set_page_config(page_title="CSV/Excel Merger Tool", layout="centered")
 st.title("📁 Merge CSV, Excel, and TXT Files into One CSV")
 
 # Pagination settings
 FILES_PER_PAGE = 20
+CHUNK_SIZE = 100000  # rows per chunk for large CSV/TXT
 
 uploaded_files = st.file_uploader(
     "Upload multiple CSV, Excel, or TXT files (any size, any mix)",
@@ -32,23 +34,31 @@ if uploaded_files:
             for uploaded_file in uploaded_files:
                 try:
                     filename = uploaded_file.name
-                    if filename.endswith('.csv'):
-                        df = pd.read_csv(uploaded_file)
+                    file_buffer = io.BytesIO(uploaded_file.read())
+                    file_buffer.seek(0)
+
+                    if filename.endswith('.csv') or filename.endswith('.txt'):
+                        delimiter = '\t' if filename.endswith('.txt') else ','
+                        chunk_iter = pd.read_csv(file_buffer, delimiter=delimiter, chunksize=CHUNK_SIZE)
+                        for chunk in chunk_iter:
+                            chunk.columns = [f"Column{i+1}" for i in range(len(chunk.columns))]
+                            if merged_df.empty:
+                                merged_df = chunk.copy()
+                            else:
+                                chunk.columns = merged_df.columns[:len(chunk.columns)]
+                                merged_df = pd.concat([merged_df, chunk], ignore_index=True)
+
                     elif filename.endswith(('.xls', '.xlsx')):
-                        df = pd.read_excel(uploaded_file, engine='openpyxl')
-                    elif filename.endswith('.txt'):
-                        df = pd.read_csv(uploaded_file, delimiter='\t')  # tab-delimited assumed
+                        df = pd.read_excel(file_buffer, engine='openpyxl')
+                        df.columns = [f"Column{i+1}" for i in range(len(df.columns))]
+                        if merged_df.empty:
+                            merged_df = df.copy()
+                        else:
+                            df.columns = merged_df.columns[:len(df.columns)]
+                            merged_df = pd.concat([merged_df, df], ignore_index=True)
+
                     else:
                         st.warning(f"Unsupported file type: {filename}")
-                        continue
-
-                    # Standardize column names to Column1, Column2, ...
-                    df.columns = [f"Column{i+1}" for i in range(len(df.columns))]
-                    if merged_df.empty:
-                        merged_df = df.copy()
-                    else:
-                        df.columns = merged_df.columns[:len(df.columns)]
-                        merged_df = pd.concat([merged_df, df], ignore_index=True)
 
                 except Exception as e:
                     st.error(f"Error processing {uploaded_file.name}: {e}")
