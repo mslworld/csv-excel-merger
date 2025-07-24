@@ -72,4 +72,4 @@ if uploaded_files:
             with open(output_path, "rb") as f:
                 st.download_button("📥 Download Merged CSV", f, file_name="merged_output.csv")
         else:
-            st.warning("No data was merged. Please check the files.")
+            st.warning("No data was merged. Please check the files.") 
