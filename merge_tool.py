@@ -3,7 +3,7 @@ import pandas as pd
 import os
 import tempfile
 import io
-
+ 
 st.set_page_config(page_title="CSV/Excel Merger Tool", layout="centered")
 st.title("📁 Merge CSV, Excel, and TXT Files into One CSV")
 
@@ -74,5 +74,6 @@ if uploaded_files:
         else:
             st.warning("No data was merged. Please check the files.") 
  
+
 
 
