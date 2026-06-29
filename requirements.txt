@@ -1,8 +1,4 @@
-streamlit>=1.30.0
-pandas>=2.2.0
-numpy>=1.26.0
-openpyxl>=3.1.0
-xlrd>=2.0.0
-odfpy>=1.4.0
-lxml>=4.9.0
-sylk-parser>=0.5.0
+streamlit
+pandas
+openpyxl
+xlrd
