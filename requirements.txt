@@ -1,4 +1,9 @@
-streamlit
-pandas
-openpyxl
-xlrd
+streamlit>=1.30.0
+pandas>=2.0.0
+openpyxl>=3.1.0
+xlrd>=2.0.1
+odfpy>=1.4.1
+lxml>=4.9.0
+pyxlsb>=1.0.10
+chardet>=5.2.0
+python-magic; platform_system != "Windows"
