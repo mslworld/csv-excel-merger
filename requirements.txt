@@ -1,24 +1,8 @@
-# =============================================================================
-# Professional CSV / Excel / Spreadsheet Merger — Requirements
-# =============================================================================
-# Core framework
-streamlit>=1.28.0
-
-# Data processing & chunked I/O
-pandas>=2.0.0
-numpy>=1.24.0
-
-# Excel formats (.xlsx)
+streamlit>=1.30.0
+pandas>=2.2.0
+numpy>=1.26.0
 openpyxl>=3.1.0
-
-# Legacy Excel (.xls)
 xlrd>=2.0.0
-
-# OpenDocument Spreadsheet (.ods)
 odfpy>=1.4.0
-
-# XML parsing (required by pandas.read_xml)
 lxml>=4.9.0
-
-# SYLK / SLK parser
 sylk-parser>=0.5.0
