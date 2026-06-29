@@ -147,13 +147,17 @@ def process_merge(files, output_path, all_columns):
                     # Use chunking for large text files
                     chunks = pd.read_csv(f, sep=sep, chunksize=50000, low_memory=False)
                     for chunk_idx, chunk in enumerate(chunks):
-                        # Align columns: add missing ones as NaN
+                        # FIX: Remove index if it was read as a column
+                        if 'Unnamed: 0' in chunk.columns:
+                            chunk = chunk.drop(columns=['Unnamed: 0'])
+                            
+                        # Align columns: ensure data stays in correct named column
                         chunk = chunk.reindex(columns=all_columns)
-                        # Write to CSV
+                        
+                        # FIX: index=False is critical to prevent shifting data to the right
                         chunk.to_csv(out_f, header=False, index=False, quoting=csv.QUOTE_MINIMAL)
                         
                         total_rows += len(chunk)
-                        # Update sub-metrics
                         m3.metric("Rows Processed", f"{total_rows:,}")
                         
                 else:
@@ -166,10 +170,19 @@ def process_merge(files, output_path, all_columns):
                     elif ext == '.xml':
                         df = pd.read_xml(f)
                     elif ext == '.slk':
-                        df = pd.read_csv(f, sep=';', engine='python') # SYLK often uses semi-colon
+                        # SYLK handling
+                        df = pd.read_csv(f, sep=';', engine='python')
+                    elif ext == '.prn':
+                        # PRN handling (fixed width usually, but often treated as space-sep)
+                        df = pd.read_csv(f, sep='\s+', engine='python')
                     else:
                         df = pd.read_csv(f)
                     
+                    # FIX: Ensure we don't have an "Unnamed" index column from the original file
+                    if 'Unnamed: 0' in df.columns:
+                        df = df.drop(columns=['Unnamed: 0'])
+
+                    # FIX: Align columns strictly and drop the index to prevent shifting
                     df = df.reindex(columns=all_columns)
                     df.to_csv(out_f, header=False, index=False, quoting=csv.QUOTE_MINIMAL)
                     total_rows += len(df)
