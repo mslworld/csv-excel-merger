@@ -1,334 +1,666 @@
-import streamlit as st
-import pandas as pd
+"""
+file_handlers.py
+================
+High-performance file processing module for the Professional Spreadsheet Merger.
+Handles streaming reads, delimiter detection, header extraction, and row iteration
+for all supported formats while minimizing memory usage.
+
+Supported formats:
+  .csv .txt .prn .xls .xlsx .ods .xml .dif .slk
+"""
+
+import csv
+import io
 import os
 import time
-import io
-import tempfile
-import csv
-from datetime import datetime
-import math
+import xml.etree.ElementTree as ET
+from typing import Dict, Iterator, List, Optional, Tuple
 
-# Set Page Config
-st.set_page_config(
-    page_title="Pro Spreadsheet Merger",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
+import pandas as pd
 
-# Custom CSS for Professional Look
-st.markdown("""
-    <style>
-    .main {
-        background-color: #f8f9fa;
-    }
-    .stButton>button {
-        width: 100%;
-        border-radius: 5px;
-        height: 3em;
-        background-color: #007bff;
-        color: white;
-    }
-    .stProgress > div > div > div > div {
-        background-color: #28a745;
-    }
-    .reportview-container .main .block-container {
-        padding-top: 2rem;
-    }
-    .metric-container {
-        background-color: white;
-        padding: 20px;
-        border-radius: 10px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-    }
-    </style>
-""", unsafe_allow_html=True)
+# ---------------------------------------------------------------------------
+# Supported extensions (always compared lowercase)
+# ---------------------------------------------------------------------------
+SUPPORTED_EXTENSIONS: set = {
+    ".csv",
+    ".txt",
+    ".xls",
+    ".xlsx",
+    ".xml",
+    ".ods",
+    ".dif",
+    ".slk",
+    ".prn",
+}
 
-# Helper Constants
-SUPPORTED_EXTENSIONS = [".csv", ".txt", ".xls", ".xlsx", ".xml", ".ods", ".dif", ".slk", ".prn"]
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
-def get_file_info(uploaded_file):
-    """Extract metadata from uploaded file."""
-    name = uploaded_file.name
-    ext = os.path.splitext(name)[1].lower()
-    size_kb = uploaded_file.size / 1024
-    return {
-        "name": name,
-        "extension": ext,
-        "size": size_kb,
-        "raw": uploaded_file
-    }
+def get_file_extension(filename: str) -> str:
+    """Return the lowercase file extension including the leading dot."""
+    return os.path.splitext(filename)[1].lower()
 
-def detect_delimiter(file_obj):
-    """Attempt to detect CSV delimiter."""
-    try:
-        sample = file_obj.read(2048).decode('utf-8', errors='ignore')
-        file_obj.seek(0)
-        sniffer = csv.Sniffer()
-        return sniffer.sniff(sample).delimiter
-    except:
-        file_obj.seek(0)
-        return ','
 
-def get_all_columns(files):
-    """
-    Scan all files briefly to determine the union of all column names.
-    This ensures proper alignment during streaming.
-    """
-    all_cols = []
-    seen = set()
-    
-    status_text = st.empty()
-    status_text.text("Analyzing column structures...")
-    
-    for f_info in files:
-        ext = f_info['extension']
-        f = f_info['raw']
-        try:
-            # We only read the first row to get columns
-            if ext in ['.csv', '.txt']:
-                sep = detect_delimiter(f)
-                df = pd.read_csv(f, sep=sep, nrows=0)
-            elif ext in ['.xls', '.xlsx']:
-                df = pd.read_excel(f, nrows=0)
-            elif ext == '.ods':
-                df = pd.read_excel(f, engine='odf', nrows=0)
-            elif ext == '.xml':
-                df = pd.read_xml(f, nrows=0)
-            else:
-                # Fallback for other formats, try reading small chunk
-                df = pd.read_csv(f, nrows=0)
-            
-            for col in df.columns:
-                if col not in seen:
-                    all_cols.append(col)
-                    seen.add(col)
-            f.seek(0)
-        except Exception:
-            f.seek(0)
-            continue
-            
-    status_text.empty()
-    return all_cols
+def is_supported_file(filename: str) -> bool:
+    """Check whether the file extension is supported (case-insensitive)."""
+    return get_file_extension(filename) in SUPPORTED_EXTENSIONS
 
-def process_merge(files, output_path, all_columns):
-    """
-    High-performance streaming merge logic.
-    """
-    total_files = len(files)
-    processed_files = 0
-    skipped_files = []
-    total_rows = 0
-    start_time = time.time()
-    
-    # Progress UI placeholders
-    progress_bar = st.progress(0)
-    status_label = st.empty()
-    metrics_row = st.columns(4)
-    m1, m2, m3, m4 = metrics_row
-    
-    # Open the output file for writing
-    with open(output_path, 'w', newline='', encoding='utf-8') as out_f:
-        writer = csv.DictWriter(out_f, fieldnames=all_columns)
-        writer.writeheader()
-        
-        for idx, f_info in enumerate(files):
-            filename = f_info['name']
-            ext = f_info['extension']
-            f = f_info['raw']
-            f.seek(0)
-            
-            status_label.info(f"Processing ({idx+1}/{total_files}): {filename}")
-            
-            try:
-                # Determine how to read the file
-                if ext in ['.csv', '.txt']:
-                    sep = detect_delimiter(f)
-                    # Use chunking for large text files
-                    chunks = pd.read_csv(f, sep=sep, chunksize=50000, low_memory=False)
-                    for chunk_idx, chunk in enumerate(chunks):
-                        # FIX: Remove index if it was read as a column
-                        if 'Unnamed: 0' in chunk.columns:
-                            chunk = chunk.drop(columns=['Unnamed: 0'])
-                            
-                        # Align columns: ensure data stays in correct named column
-                        chunk = chunk.reindex(columns=all_columns)
-                        
-                        # FIX: index=False is critical to prevent shifting data to the right
-                        chunk.to_csv(out_f, header=False, index=False, quoting=csv.QUOTE_MINIMAL)
-                        
-                        total_rows += len(chunk)
-                        m3.metric("Rows Processed", f"{total_rows:,}")
-                        
-                else:
-                    # For Excel/other non-streaming formats, we have to load fully 
-                    # but we do it one file at a time to save RAM.
-                    if ext in ['.xls', '.xlsx']:
-                        df = pd.read_excel(f)
-                    elif ext == '.ods':
-                        df = pd.read_excel(f, engine='odf')
-                    elif ext == '.xml':
-                        df = pd.read_xml(f)
-                    elif ext == '.slk':
-                        # SYLK handling
-                        df = pd.read_csv(f, sep=';', engine='python')
-                    elif ext == '.prn':
-                        # PRN handling (fixed width usually, but often treated as space-sep)
-                        df = pd.read_csv(f, sep='\s+', engine='python')
-                    else:
-                        df = pd.read_csv(f)
-                    
-                    # FIX: Ensure we don't have an "Unnamed" index column from the original file
-                    if 'Unnamed: 0' in df.columns:
-                        df = df.drop(columns=['Unnamed: 0'])
 
-                    # FIX: Align columns strictly and drop the index to prevent shifting
-                    df = df.reindex(columns=all_columns)
-                    df.to_csv(out_f, header=False, index=False, quoting=csv.QUOTE_MINIMAL)
-                    total_rows += len(df)
-                
-                processed_files += 1
-                
-            except Exception as e:
-                skipped_files.append({"file": filename, "error": str(e)})
-            
-            # Update overall progress
-            elapsed = time.time() - start_time
-            progress = (idx + 1) / total_files
-            progress_bar.progress(progress)
-            
-            avg_time_per_file = elapsed / (idx + 1)
-            remaining_files = total_files - (idx + 1)
-            est_remaining = avg_time_per_file * remaining_files
-            
-            m1.metric("Files Done", f"{processed_files}/{total_files}")
-            m2.metric("Elapsed", f"{elapsed:.1f}s")
-            m4.metric("Est. Left", f"{est_remaining:.1f}s")
-
-    return processed_files, skipped_files, total_rows, time.time() - start_time
-
-def main():
-    st.title("🚀 Professional Spreadsheet Merger")
-    st.markdown("Merge CSV, Excel, ODS, and more with high-performance streaming.")
-
-    if 'uploaded_files_list' not in st.session_state:
-        st.session_state.uploaded_files_list = []
-
-    # Sidebar / Top Actions
-    with st.expander("⬆️ Upload Files", expanded=True):
-        new_files = st.file_uploader(
-            "Drag and drop files here", 
-            accept_multiple_files=True,
-            type=[ext.strip('.') for ext in SUPPORTED_EXTENSIONS]
-        )
-        
-        if new_files:
-            for f in new_files:
-                if f.name not in [x['name'] for x in st.session_state.uploaded_files_list]:
-                    st.session_state.uploaded_files_list.append(get_file_info(f))
-
-    if st.session_state.uploaded_files_list:
-        # Action Buttons
-        col_btns = st.columns([1, 1, 4])
-        if col_btns[0].button("🗑️ Clear All"):
-            st.session_state.uploaded_files_list = []
-            st.rerun()
-            
-        # Search and Filter
-        search_query = st.text_input("🔍 Search files by name...", "")
-        
-        filtered_files = [
-            f for f in st.session_state.uploaded_files_list 
-            if search_query.lower() in f['name'].lower()
-        ]
-        
-        # Pagination
-        items_per_page = 20
-        total_pages = math.ceil(len(filtered_files) / items_per_page)
-        page = st.number_input("Page", min_value=1, max_value=max(1, total_pages), step=1)
-        
-        start_idx = (page - 1) * items_per_page
-        end_idx = start_idx + items_per_page
-        
-        # Display File List
-        st.subheader(f"Files to Merge ({len(filtered_files)})")
-        
-        # Summary Header
-        total_size = sum(f['size'] for f in filtered_files)
-        st.info(f"Total Files: **{len(filtered_files)}** | Total Size: **{total_size/1024:.2f} MB**")
-        
-        # Table Header
-        h_col1, h_col2, h_col3, h_col4 = st.columns([4, 2, 2, 1])
-        h_col1.write("**Filename**")
-        h_col2.write("**Size (KB)**")
-        h_col3.write("**Ext**")
-        h_col4.write("**Action**")
-        
-        for i, f_info in enumerate(filtered_files[start_idx:end_idx]):
-            c1, c2, c3, c4 = st.columns([4, 2, 2, 1])
-            c1.write(f_info['name'])
-            c2.write(f"{f_info['size']:.2f}")
-            c3.write(f_info['extension'].upper())
-            if c4.button("❌", key=f"del_{f_info['name']}"):
-                st.session_state.uploaded_files_list = [
-                    x for x in st.session_state.uploaded_files_list if x['name'] != f_info['name']
-                ]
-                st.rerun()
-
-        st.divider()
-        
-        # Merge Section
-        if st.button("🏗️ Start Merging Files", type="primary"):
-            if not st.session_state.uploaded_files_list:
-                st.error("No files to merge!")
-                return
-
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp_out:
-                output_path = tmp_out.name
-            
-            try:
-                # 1. Get Union of Columns
-                all_columns = get_all_columns(st.session_state.uploaded_files_list)
-                
-                # 2. Process Merge
-                processed, skipped, total_rows, duration = process_merge(
-                    st.session_state.uploaded_files_list, 
-                    output_path, 
-                    all_columns
-                )
-                
-                # 3. Success Summary
-                st.success("✅ Merging Completed!")
-                
-                stats_col1, stats_col2, stats_col3 = st.columns(3)
-                stats_col1.metric("Total Rows", f"{total_rows:,}")
-                stats_col2.metric("Time Taken", f"{duration:.2f}s")
-                out_size = os.path.getsize(output_path) / (1024 * 1024)
-                stats_col3.metric("Output Size", f"{out_size:.2f} MB")
-                
-                # Download Button
-                with open(output_path, "rb") as f:
-                    st.download_button(
-                        label="📥 Download Merged CSV",
-                        data=f,
-                        file_name=f"merged_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                        mime="text/csv"
-                    )
-                
-                # Error Log
-                if skipped:
-                    with st.expander("⚠️ Skipped Files / Errors"):
-                        for s in skipped:
-                            st.error(f"**{s['file']}**: {s['error']}")
-                            
-            except Exception as e:
-                st.error(f"A critical error occurred: {str(e)}")
-            finally:
-                # Cleanup handled by user downloading or session end
-                pass
+def format_file_size(size_bytes: int) -> str:
+    """Human-readable file size."""
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    elif size_bytes < 1024 * 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.1f} MB"
     else:
-        st.info("Please upload some spreadsheet files to get started.")
-        st.image("https://img.icons8.com/clouds/200/000000/data-configuration.png", width=200)
+        return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
 
-if __name__ == "__main__":
-    main()
+
+def format_duration(seconds: float) -> str:
+    """Format seconds into mm:ss or hh:mm:ss."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    elif seconds < 3600:
+        m, s = divmod(int(seconds), 60)
+        return f"{m}m {s}s"
+    else:
+        h, rem = divmod(int(seconds), 3600)
+        m, s = divmod(rem, 60)
+        return f"{h}h {m}m {s}s"
+
+
+# ---------------------------------------------------------------------------
+# Delimiter detection
+# ---------------------------------------------------------------------------
+
+def detect_delimiter(file_path: str, sample_bytes: int = 16384) -> str:
+    """
+    Auto-detect the most likely delimiter for a CSV/TXT file by inspecting
+    an initial byte sample.
+    """
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
+            sample = fh.read(sample_bytes)
+    except Exception:
+        with open(file_path, "r", encoding="latin-1", errors="replace") as fh:
+            sample = fh.read(sample_bytes)
+
+    candidates = [",", "\t", ";", "|", ":"]
+    counts = {d: sample.count(d) for d in candidates}
+    best = max(counts, key=counts.get)
+    return best if counts[best] > 0 else ","
+
+
+# ---------------------------------------------------------------------------
+# Header extraction (fast, minimal I/O)
+# ---------------------------------------------------------------------------
+
+def extract_header(file_path: str) -> List[str]:
+    """
+    Extract the header row from any supported file format.
+    Returns a list of column name strings.
+    """
+    ext = get_file_extension(file_path)
+
+    # ------------------------------------------------------------------
+    # CSV / TXT / PRN  ->  pandas read_csv with nrows=0
+    # ------------------------------------------------------------------
+    if ext in (".csv", ".txt", ".prn"):
+        sep = detect_delimiter(file_path)
+        if ext == ".prn":
+            sep = r"\s+"
+        df = pd.read_csv(
+            file_path,
+            nrows=0,
+            sep=sep,
+            engine="python" if ext == ".prn" else "c",
+            encoding="utf-8",
+            encoding_errors="replace",
+        )
+        return [str(c) for c in df.columns]
+
+    # ------------------------------------------------------------------
+    # XLSX  ->  openpyxl read-only, first row of first sheet
+    # ------------------------------------------------------------------
+    if ext == ".xlsx":
+        import openpyxl
+
+        wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+        sheet = wb.active
+        first = next(sheet.iter_rows(values_only=True), ())
+        wb.close()
+        return [str(cell) if cell is not None else "" for cell in first]
+
+    # ------------------------------------------------------------------
+    # XLS  ->  xlrd first row
+    # ------------------------------------------------------------------
+    if ext == ".xls":
+        import xlrd
+
+        book = xlrd.open_workbook(file_path, on_demand=True)
+        sheet = book.sheet_by_index(0)
+        header = [str(sheet.cell_value(0, c)) for c in range(sheet.ncols)]
+        book.release_resources()
+        return header
+
+    # ------------------------------------------------------------------
+    # ODS  ->  pandas read_excel(nrows=0) via odfpy
+    # ------------------------------------------------------------------
+    if ext == ".ods":
+        df = pd.read_excel(file_path, engine="odf", nrows=0, dtype=str)
+        return [str(c) for c in df.columns]
+
+    # ------------------------------------------------------------------
+    # XML  ->  pandas read_xml(nrows=0) or fallback to ElementTree
+    # ------------------------------------------------------------------
+    if ext == ".xml":
+        try:
+            df = pd.read_xml(file_path, nrows=0, dtype=str)
+            return [str(c) for c in df.columns]
+        except Exception:
+            tree = ET.parse(file_path)
+            root = tree.getroot()
+            for elem in root.iter():
+                children = list(elem)
+                if children:
+                    return [child.tag for child in children]
+            return []
+
+    # ------------------------------------------------------------------
+    # DIF  ->  lightweight custom parser
+    # ------------------------------------------------------------------
+    if ext == ".dif":
+        df = _parse_dif(file_path)
+        return [str(c) for c in df.columns] if not df.empty else []
+
+    # ------------------------------------------------------------------
+    # SLK  ->  sylk_parser to CSV then read header
+    # ------------------------------------------------------------------
+    if ext == ".slk":
+        from sylk_parser import SylkParser
+
+        parser = SylkParser(file_path)
+        buf = io.StringIO()
+        parser.to_csv(buf)
+        buf.seek(0)
+        df = pd.read_csv(buf, nrows=0, dtype=str)
+        return [str(c) for c in df.columns]
+
+    return []
+
+
+# ---------------------------------------------------------------------------
+# Row count estimation (for UI statistics)
+# ---------------------------------------------------------------------------
+
+def estimate_row_count(file_path: str) -> int:
+    """
+    Return a rough estimate of data rows (excluding header).
+    For text files this uses line-count heuristics; for binary formats
+    the native APIs report exact sheet dimensions where possible.
+    """
+    ext = get_file_extension(file_path)
+
+    if ext in (".csv", ".txt", ".prn"):
+        try:
+            with open(file_path, "rb") as fh:
+                sample = fh.read(20480)
+                if not sample:
+                    return 0
+                newline_count = sample.count(b"\n")
+                avg_line = len(sample) / max(newline_count, 1)
+                total_size = os.path.getsize(file_path)
+                est = int(total_size / avg_line)
+                return max(0, est - 1)
+        except Exception:
+            return 0
+
+    if ext == ".xlsx":
+        try:
+            import openpyxl
+
+            wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+            total = sum(max(0, sheet.max_row - 1) for sheet in wb.worksheets)
+            wb.close()
+            return total
+        except Exception:
+            return 0
+
+    if ext == ".xls":
+        try:
+            import xlrd
+
+            book = xlrd.open_workbook(file_path, on_demand=True)
+            total = sum(max(0, sheet.nrows - 1) for sheet in book.sheets())
+            book.release_resources()
+            return total
+        except Exception:
+            return 0
+
+    if ext == ".ods":
+        try:
+            from odf import opendocument
+            from odf.table import Table, TableRow
+
+            doc = opendocument.load(file_path)
+            tables = doc.spreadsheet.getElementsByType(Table)
+            total = 0
+            for table in tables:
+                rows = list(table.getElementsByType(TableRow))
+                total += max(0, len(rows) - 1)
+            return total
+        except Exception:
+            return 0
+
+    if ext == ".xml":
+        try:
+            count = 0
+            context = ET.iterparse(file_path, events=("end",))
+            for _, elem in context:
+                tag = elem.tag.lower()
+                if tag in ("row", "record", "item", "entry"):
+                    count += 1
+                elem.clear()
+            return max(0, count - 1)
+        except Exception:
+            return 0
+
+    if ext in (".dif", ".slk"):
+        try:
+            if ext == ".dif":
+                df = _parse_dif(file_path)
+            else:
+                from sylk_parser import SylkParser
+
+                parser = SylkParser(file_path)
+                buf = io.StringIO()
+                parser.to_csv(buf)
+                buf.seek(0)
+                df = pd.read_csv(buf, dtype=str)
+            return max(0, len(df) - 1)
+        except Exception:
+            return 0
+
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Streaming row generators
+# ---------------------------------------------------------------------------
+
+def stream_rows(
+    file_path: str, master_columns: List[str], chunk_size: int = 50000
+) -> Iterator[Dict[str, str]]:
+    """
+    Yield each row from *file_path* as a dictionary aligned to
+    *master_columns*.  Missing columns receive an empty string.
+
+    This generator is the heart of the memory-efficient merge:
+    only one chunk (or one row) resides in RAM at any moment.
+    """
+    ext = get_file_extension(file_path)
+
+    # ------------------------------------------------------------------
+    # CSV / TXT  ->  chunked pandas read_csv
+    # ------------------------------------------------------------------
+    if ext in (".csv", ".txt"):
+        sep = detect_delimiter(file_path)
+        reader = pd.read_csv(
+            file_path,
+            chunksize=chunk_size,
+            sep=sep,
+            engine="c",
+            dtype=str,
+            keep_default_na=False,
+            encoding="utf-8",
+            encoding_errors="replace",
+        )
+        for chunk in reader:
+            for _, row in chunk.iterrows():
+                yield {col: str(row.get(col, "")) for col in master_columns}
+        return
+
+    # ------------------------------------------------------------------
+    # PRN  ->  whitespace-delimited chunked read
+    # ------------------------------------------------------------------
+    if ext == ".prn":
+        reader = pd.read_csv(
+            file_path,
+            chunksize=chunk_size,
+            delim_whitespace=True,
+            engine="python",
+            dtype=str,
+            keep_default_na=False,
+            encoding="utf-8",
+            encoding_errors="replace",
+        )
+        for chunk in reader:
+            for _, row in chunk.iterrows():
+                yield {col: str(row.get(col, "")) for col in master_columns}
+        return
+
+    # ------------------------------------------------------------------
+    # XLSX  ->  openpyxl read-only row iterator
+    # ------------------------------------------------------------------
+    if ext == ".xlsx":
+        import openpyxl
+
+        wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+        for sheet in wb.worksheets:
+            rows = sheet.iter_rows(values_only=True)
+            try:
+                file_header = next(rows)
+            except StopIteration:
+                continue
+            file_header = [str(h) if h is not None else "" for h in file_header]
+            col_idx = {h: i for i, h in enumerate(file_header)}
+
+            for row in rows:
+                yield {
+                    col: str(row[col_idx[col]])
+                    if col in col_idx and col_idx[col] < len(row) and row[col_idx[col]] is not None
+                    else ""
+                    for col in master_columns
+                }
+        wb.close()
+        return
+
+    # ------------------------------------------------------------------
+    # XLS  ->  xlrd sheet-by-sheet
+    # ------------------------------------------------------------------
+    if ext == ".xls":
+        import xlrd
+
+        book = xlrd.open_workbook(file_path, on_demand=True)
+        for sheet_idx in range(book.nsheets):
+            sheet = book.sheet_by_index(sheet_idx)
+            if sheet.nrows == 0:
+                continue
+            file_header = [str(sheet.cell_value(0, c)) for c in range(sheet.ncols)]
+            col_idx = {h: c for c, h in enumerate(file_header)}
+
+            for r in range(1, sheet.nrows):
+                yield {
+                    col: str(sheet.cell_value(r, col_idx[col]))
+                    if col in col_idx
+                    else ""
+                    for col in master_columns
+                }
+        book.release_resources()
+        return
+
+    # ------------------------------------------------------------------
+    # ODS  ->  pandas (ods are typically small; full load is acceptable)
+    # ------------------------------------------------------------------
+    if ext == ".ods":
+        df = pd.read_excel(
+            file_path, engine="odf", dtype=str, keep_default_na=False
+        )
+        for _, row in df.iterrows():
+            yield {col: str(row.get(col, "")) for col in master_columns}
+        return
+
+    # ------------------------------------------------------------------
+    # XML  ->  pandas read_xml
+    # ------------------------------------------------------------------
+    if ext == ".xml":
+        df = pd.read_xml(file_path, dtype=str, keep_default_na=False)
+        for _, row in df.iterrows():
+            yield {col: str(row.get(col, "")) for col in master_columns}
+        return
+
+    # ------------------------------------------------------------------
+    # DIF  ->  custom parser
+    # ------------------------------------------------------------------
+    if ext == ".dif":
+        df = _parse_dif(file_path)
+        for _, row in df.iterrows():
+            yield {col: str(row.get(col, "")) for col in master_columns}
+        return
+
+    # ------------------------------------------------------------------
+    # SLK  ->  sylk_parser
+    # ------------------------------------------------------------------
+    if ext == ".slk":
+        from sylk_parser import SylkParser
+
+        parser = SylkParser(file_path)
+        buf = io.StringIO()
+        parser.to_csv(buf)
+        buf.seek(0)
+        df = pd.read_csv(buf, dtype=str, keep_default_na=False)
+        for _, row in df.iterrows():
+            yield {col: str(row.get(col, "")) for col in master_columns}
+        return
+
+
+# ---------------------------------------------------------------------------
+# DIF parser
+# ---------------------------------------------------------------------------
+
+def _parse_dif(file_path: str) -> pd.DataFrame:
+    """
+    Lightweight Data Interchange Format (DIF) parser.
+
+    DIF structure (simplified):
+      TABLE
+      VECTORS
+      TUPLES
+      DATA
+      0,0 ""
+      -1,0 BOT
+      <value rows>
+      -1,0 EOD
+
+    String values:  1,0"text"
+    Numeric values: 0,number
+    Row separator:  -1,0  (followed by BOT or EOD)
+    """
+    with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
+        lines = [ln.strip() for ln in fh.readlines()]
+
+    # Locate DATA section
+    data_start = None
+    for i, line in enumerate(lines):
+        if line.upper() == "DATA":
+            data_start = i
+            break
+
+    if data_start is None:
+        return pd.DataFrame()
+
+    rows: List[List[str]] = []
+    current: List[str] = []
+    idx = data_start + 1
+
+    while idx < len(lines):
+        line = lines[idx]
+
+        if line.upper() == "EOD":
+            if current:
+                rows.append(current)
+            break
+
+        if line == "-1,0":
+            if current:
+                rows.append(current)
+                current = []
+            idx += 1
+            continue
+
+        # String token
+        if line.startswith("1,0"):
+            val = line[3:].strip()
+            if val.startswith('"') and val.endswith('"'):
+                val = val[1:-1]
+            current.append(val)
+        # Numeric / special token
+        elif line.startswith("0,"):
+            parts = line.split(",", 1)
+            if len(parts) > 1:
+                val = parts[1].strip()
+                if val == "V":
+                    current.append("")
+                else:
+                    try:
+                        current.append(str(float(val)))
+                    except ValueError:
+                        current.append(val)
+            else:
+                current.append("")
+        else:
+            current.append(line)
+
+        idx += 1
+
+    if not rows:
+        return pd.DataFrame()
+
+    header = rows[0]
+    data = rows[1:]
+    n_cols = len(header)
+
+    # Normalise row lengths
+    normalised = []
+    for row in data:
+        if len(row) < n_cols:
+            row = row + [""] * (n_cols - len(row))
+        elif len(row) > n_cols:
+            row = row[:n_cols]
+        normalised.append(row)
+
+    return pd.DataFrame(normalised, columns=header)
+
+
+# ---------------------------------------------------------------------------
+# Master-column builder
+# ---------------------------------------------------------------------------
+
+def build_master_columns(file_infos: List[dict]) -> List[str]:
+    """
+    Scan every file's header and build a single master column list.
+    Order is preserved from the first file; new columns discovered in
+    later files are appended.
+    """
+    master: List[str] = []
+    seen: set = set()
+
+    for info in file_infos:
+        try:
+            header = extract_header(info["path"])
+            for col in header:
+                if col not in seen:
+                    seen.add(col)
+                    master.append(col)
+        except Exception:
+            continue
+
+    return master
+
+
+# ---------------------------------------------------------------------------
+# Merge orchestrator
+# ---------------------------------------------------------------------------
+
+def perform_merge(
+    file_infos: List[dict],
+    master_columns: List[str],
+    output_path: str,
+    chunk_size: int = 50000,
+    progress_callback=None,
+) -> dict:
+    """
+    Stream-merge all files into a single CSV at *output_path*.
+
+    Parameters
+    ----------
+    file_infos : list of dict
+        Each dict must contain at least 'path' and 'name' keys.
+    master_columns : list of str
+        The canonical column order for the output CSV.
+    output_path : str
+        Destination file path.
+    chunk_size : int
+        Chunk size for pandas-based readers.
+    progress_callback : callable or None
+        If provided, called repeatedly with a dict of progress stats.
+
+    Returns
+    -------
+    dict
+        merge_result keys:
+        - merged_files   : list of successfully merged filenames
+        - skipped_files  : list of (filename, error_message) tuples
+        - total_rows     : total data rows written
+        - elapsed_seconds: wall-clock merge time
+        - output_path    : path to the generated CSV
+    """
+    total_files = len(file_infos)
+    start_time = time.time()
+
+    merged_files: List[str] = []
+    skipped_files: List[Tuple[str, str]] = []
+    total_rows = 0
+
+    with open(output_path, "w", newline="", encoding="utf-8") as out_fh:
+        writer = csv.DictWriter(
+            out_fh,
+            fieldnames=master_columns,
+            extrasaction="ignore",
+            restval="",
+            lineterminator="\n",
+        )
+        writer.writeheader()
+
+        for file_idx, info in enumerate(file_infos):
+            file_path = info["path"]
+            file_name = info["name"]
+
+            if progress_callback:
+                progress_callback(
+                    {
+                        "current_file": file_name,
+                        "file_index": file_idx,
+                        "total_files": total_files,
+                        "rows_processed": total_rows,
+                        "elapsed": time.time() - start_time,
+                    }
+                )
+
+            try:
+                file_rows = 0
+                for row in stream_rows(file_path, master_columns, chunk_size):
+                    writer.writerow(row)
+                    total_rows += 1
+                    file_rows += 1
+
+                    # Throttle UI updates to every 2 000 rows
+                    if total_rows % 2000 == 0 and progress_callback:
+                        progress_callback(
+                            {
+                                "current_file": file_name,
+                                "file_index": file_idx,
+                                "total_files": total_files,
+                                "rows_processed": total_rows,
+                                "elapsed": time.time() - start_time,
+                            }
+                        )
+
+                merged_files.append(file_name)
+
+            except Exception as exc:
+                skipped_files.append((file_name, str(exc)))
+                continue
+
+    elapsed = time.time() - start_time
+
+    return {
+        "merged_files": merged_files,
+        "skipped_files": skipped_files,
+        "total_rows": total_rows,
+        "elapsed_seconds": elapsed,
+        "output_path": output_path,
+    }
