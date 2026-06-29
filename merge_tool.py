@@ -13,7 +13,7 @@ CHUNK_SIZE = 100000  # rows per chunk for large CSV/TXT
 
 uploaded_files = st.file_uploader(
     "Upload multiple CSV, Excel, or TXT files (any size, any mix)",
-    type=["csv", "xls", "xlsx", "txt"],
+    type=["csv", "xls", "xlsx", "txt", "csV"],
     accept_multiple_files=True,
     key="file_uploader"
 )
