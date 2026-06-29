@@ -1,9 +1,24 @@
-streamlit>=1.30.0
+# =============================================================================
+# Professional CSV / Excel / Spreadsheet Merger — Requirements
+# =============================================================================
+# Core framework
+streamlit>=1.28.0
+
+# Data processing & chunked I/O
 pandas>=2.0.0
+numpy>=1.24.0
+
+# Excel formats (.xlsx)
 openpyxl>=3.1.0
-xlrd>=2.0.1
-odfpy>=1.4.1
+
+# Legacy Excel (.xls)
+xlrd>=2.0.0
+
+# OpenDocument Spreadsheet (.ods)
+odfpy>=1.4.0
+
+# XML parsing (required by pandas.read_xml)
 lxml>=4.9.0
-pyxlsb>=1.0.10
-chardet>=5.2.0
-python-magic; platform_system != "Windows"
+
+# SYLK / SLK parser
+sylk-parser>=0.5.0
